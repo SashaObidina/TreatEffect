@@ -84,8 +84,8 @@ def fit_epoch(model, train_batches, criterion, optimizer, mask, batch_size, devi
         y_train = y_train[nan_mask]
 
         if len(y_train) == 0:
-            print('All predictions are NANs, skipping this batch')
-            continue
+            print('All predictions are NaNs, skipping this batch')
+            return None, None
 
         y_loss = criterion(y_pred, y_train)  # unsqueeze(0) - чтобы совпадали размерности (1 * n)
         y_r2 = compute_r2_score(y_pred, y_train)
@@ -172,7 +172,7 @@ def train(model, scheduler=get_cosine_schedule_with_warmup, num_epochs=101, batc
             val_part = 0
             train_size = batch_size
             if epoch % valid_step == 0:
-                val_part = 0.2
+                val_part = 0.3
                 train_size = int((1 - val_part) * train_size)
             x_stand = normalize_data(x, train_size).permute(1, 0, 2)
             y = y.permute(1, 0)
@@ -190,6 +190,9 @@ def train(model, scheduler=get_cosine_schedule_with_warmup, num_epochs=101, batc
                 mask[j, j] = True
                 mask[j, train_size:] = True
             train_y_loss, train_r2 = fit_epoch(model, train_batches, criterion, optimizer, mask, train_size)
+            if train_y_loss is None and train_r2 is None:
+                print(f'Skip epoch {epoch} because of NaNs')
+                return
 
             val_y_loss = float('inf')
             val_r2 = float('-inf')
@@ -232,4 +235,4 @@ def train(model, scheduler=get_cosine_schedule_with_warmup, num_epochs=101, batc
         scheduler_state = scheduler.state_dict()
 
     # get_embeddings(model, all_train_dataset, file_path)
-    return history, cur_loss, cur_r2, cur_model, optimizer_state, scheduler_state
+    return (history, cur_loss, cur_r2, cur_model, optimizer_state, scheduler_state)

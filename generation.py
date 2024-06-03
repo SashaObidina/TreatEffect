@@ -11,7 +11,7 @@ from ConfigSpace import ConfigurationSpace
 from copy import deepcopy
 from hyperparameter_classes import *
 
-default_device = 'cuda:0' if torch.cuda.is_available() else 'cpu:0'
+default_device = 'cuda:3' if torch.cuda.is_available() else 'cpu'
 
 
 trunc_norm_sampler_f = lambda mu, sigma : lambda: stats.truncnorm((0 - mu) / sigma, (1000000 - mu) / sigma, loc=mu, scale=sigma).rvs(1)[0]
@@ -566,8 +566,8 @@ def get_batch(batch_size, seq_len, num_features, get_batch
 
     x, y, y_, t, hyperparameter_dict = zip(*sample)
 
-    if 'verbose' in hyperparameters and hyperparameters['verbose']:
-        print('Hparams', hyperparameter_dict[0].keys())
+    #if 'verbose' in hyperparameters and hyperparameters['verbose']:
+        #print('Hparams', hyperparameter_dict[0].keys())
 
     hyperparameter_matrix = []
     for batch in hyperparameter_dict:
