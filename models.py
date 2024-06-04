@@ -10,7 +10,7 @@ from tqdm import tqdm
 from scipy.stats import uniform
 from generation import *
 
-default_device = 'cuda:0' if torch.cuda.is_available() else 'cpu:0'
+default_device = 'cuda:3' if torch.cuda.is_available() else 'cpu'
 
 '''
 p = uniform(0.1, 0.5)
@@ -69,7 +69,7 @@ class ModelExp(nn.Module):
     def forward_FCNet(self, x):
         # FCNet
         if x.size(1) < self.input_dim: # если входной размер данных меньше input_dim, зануляем недостающие признаки
-            padding = torch.zeros(x.size(0), 100 - x.size(1))
+            padding = torch.zeros(x.size(0), 100 - x.size(1)).to(default_device)
             x = torch.cat((x, padding), dim=1)
             x = x * self.input_dim / x.size(1)
         x = self.fc1(x)
@@ -122,7 +122,7 @@ class Model(nn.Module):
     def forward_FCNet(self, x):
         # FCNet
         if x.size(1) < self.input_dim: # если входной размер данных меньше input_dim, зануляем недостающие признаки
-            padding = torch.zeros(x.size(0), 100 - x.size(1))
+            padding = torch.zeros(x.size(0), 100 - x.size(1)).to(default_device)
             x = torch.cat((x, padding), dim=1)
             x = x * self.input_dim / x.size(1)
         x = self.fc1(x)

@@ -1,11 +1,18 @@
+import argparse
+import numpy as np
+import pickle
 import matplotlib.pyplot as plt
 from sklearn.model_selection import ParameterSampler
 from train_eval_funcs import *
 from generation import *
-import argparse
-import numpy as np
-import pickle
 from scipy.stats import uniform
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 def main(n_iter, num_epochs, batch_size, valid_step, max_num_features, seq_len, lr, warmup_epochs, weight_decay, mahalanobis):
     param_grid = {
@@ -18,25 +25,24 @@ def main(n_iter, num_epochs, batch_size, valid_step, max_num_features, seq_len, 
     }
 
     best_model_mse = None
+    best_optimizer_state = None
+    best_scheduler_state = None
     best_loss_mse = float('inf')
     best_r2_mse = float('-inf')
     best_history_mse = []
     best_params_mse = {}
 
-    best_model_r2 = None
-    best_loss_r2 = float('inf')
-    best_r2_r2 = float('-inf')
-    best_history_r2 = []
-    best_params_r2 = {}
-
     param_sampler = ParameterSampler(param_grid, n_iter=n_iter)  # случайно сгенерированные комбинации параметров
 
     for i, params in enumerate(param_sampler):
         print(f"Iteration {i + 1}/{n_iter}: Hyperparameters: {params}")
+        writer = SummaryWriter('logs_small')
         model = ModelExp(input_dim=100, p=params['p'], linear1_output=params['linear1_output'],
                              linear2_output=params['linear2_output'], linear3_output=params['linear3_output'],
-                             num_heads=params['num_heads'], num_layers=params['num_layers'])
-        train_res = train(model=model, scheduler=get_cosine_schedule_with_warmup,
+                             num_heads=params['num_heads'], num_layers=params['num_layers']).to(default_device)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        train_res = train(writer, model=model, optimizer=optimizer, scheduler=get_cosine_schedule_with_warmup,
                                       num_epochs=num_epochs, batch_size=batch_size, valid_step=valid_step,
                                       max_num_features=max_num_features, seq_len=seq_len, lr=lr,
                                       warmup_epochs=warmup_epochs, weight_decay=weight_decay)
@@ -50,6 +56,7 @@ def main(n_iter, num_epochs, batch_size, valid_step, max_num_features, seq_len, 
         with open(filename, 'wb') as f:
             pickle.dump(data_to_save, f)
 
+        '''
         # построение графика
         epoch_points = list(range(0, len(history) + 1, 10))
         plt.figure(figsize=(12, 6))
@@ -84,6 +91,7 @@ def main(n_iter, num_epochs, batch_size, valid_step, max_num_features, seq_len, 
         plt.tight_layout()
         plt.savefig(f'iteration_{i}_plot.png')
         plt.show()
+        '''
 
         if mse < best_loss_mse:  # and r2 > best_r2:
             best_loss_mse = mse
@@ -91,19 +99,19 @@ def main(n_iter, num_epochs, batch_size, valid_step, max_num_features, seq_len, 
             best_model_mse = model
             best_history_mse = history
             best_params_mse = params
-
-        '''if r2 > best_r2_r2:
-            best_loss_r2 = mse
-            best_r2_r2 = r2
-            best_model_r2 = model
-            best_history_r2 = history
-            best_params_r2 = params
-        '''
+            best_optimizer_state = optimizer_state
+            best_scheduler_state = scheduler_state
 
     print("best_loss (mse comparing):", best_loss_mse)
     print("best_r2 (mse comparing):", best_r2_mse)
     print("best_params (mse comparing):", best_params_mse)
     print("best_history (mse comparing)", best_history_mse)
+    filename_best = 'best_model_optimizer_scheduler.pkl'
+    data_to_save_best = (best_model_mse, best_optimizer_state, best_scheduler_state)
+    with open(filename_best, 'wb') as f:
+        pickle.dump(data_to_save_best, f)
+
+    writer.close()
 
 
 if __name__ == '__main__':

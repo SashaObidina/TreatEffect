@@ -367,7 +367,7 @@ def unpack_dict_of_tuples(d):
     return [dict(zip(d.keys(), v)) for v in list(zip(*list(d.values())))]
 
 
-def get_batch_mlp(batch_size, seq_len, num_features, hyperparameters, device='cpu:0', num_outputs=1, sampling='normal'
+def get_batch_mlp(batch_size, seq_len, num_features, hyperparameters, device=default_device, num_outputs=1, sampling='normal'
               , epoch=None, **kwargs):
     if 'multiclass_type' in hyperparameters and hyperparameters['multiclass_type'] == 'multi_node':
         num_outputs = num_outputs * hyperparameters['num_classes']

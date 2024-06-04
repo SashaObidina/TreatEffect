@@ -29,7 +29,7 @@ def eval_epoch(model, train_for_val, criterion, val_part, seq_len=256, num_clust
         y = y.to(device)
         t = t.to(device)
         with torch.enable_grad():
-            y_pred, yc_pred, cate_pred = model.forward(X, y, t, 1 - t, predict_mask)
+            y_pred, yc_pred, cate_pred = model.forward(X, y, t, 1 - t, predict_mask.to(device))
             y_loss = torch.mean(criterion(y_pred[:, split_idx:], y[split_idx:].unsqueeze(0)))  # средний лосс по батчу, unsqueeze(0) - чтобы совпадали размерности (1 * n)
             y_r2 = compute_r2_score(y_pred[:, split_idx:].squeeze(0), y[split_idx:])
             y_loss_batches.append(y_loss.item())  # присоединяем среднее по батчу
@@ -76,7 +76,7 @@ def fit_epoch(model, train_batches, criterion, optimizer, mask, batch_size, devi
 
         # y_cfactual_pred - предсказание y_cfactual (какое бы было 'y' у конкретного примера, если бы treatment было противоположным)
         # cate - conditional treatment effect
-        y_pred, yc_pred, cate_pred = model.forward(X_train, y_train, t_train, t_train_inverted, mask)
+        y_pred, yc_pred, cate_pred = model.forward(X_train, y_train, t_train, t_train_inverted, mask.to(device))
         y_pred = y_pred.squeeze(0)
         nan_mask = ~torch.isnan(y_pred)
         #print(torch.sum(nan_mask).item())
@@ -144,7 +144,7 @@ def collect_forward_outputs(model, all_train_dataset, file_path, device=default_
     return (x_outputs, y_all, t_all)
 
 
-def train(model, scheduler=get_cosine_schedule_with_warmup, num_epochs=101, batch_size=512, valid_step=10,
+def train(writer, model, optimizer, scheduler=get_cosine_schedule_with_warmup, num_epochs=101, batch_size=512, valid_step=10,
           max_num_features=10, seq_len=512, lr=0.01, warmup_epochs=10, weight_decay=0.0, mahalanobis=False):
     model.train()
     log_template = "\nEpoch {epoch:03d} train_y_loss: {train_y_loss:0.4f} train_r2: {train_r2:0.4f} val_y_loss: {val_y_loss:0.4f} val_r2: {val_r2:0.4f}"
@@ -155,7 +155,7 @@ def train(model, scheduler=get_cosine_schedule_with_warmup, num_epochs=101, batc
     num_incr_val_loss = 0  # количество эпох, в течение которых повышается val_loss
     with tqdm(desc="epoch", total=num_epochs) as pbar_outer:
         criterion = nn.MSELoss()
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        #optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         scheduler = scheduler(optimizer, warmup_epochs,
                               num_epochs if num_epochs is not None else 100)  # when training for fixed time lr schedule takes 100 steps
         for epoch in range(num_epochs):
@@ -198,6 +198,10 @@ def train(model, scheduler=get_cosine_schedule_with_warmup, num_epochs=101, batc
             val_r2 = float('-inf')
             if epoch % valid_step == 0:
                 val_y_loss, val_r2 = eval_epoch(model, train_batches, criterion, val_part, seq_len)
+                writer.add_scalar('MSE/train', train_y_loss, epoch)
+                writer.add_scalar('MSE/val', val_y_loss, epoch)
+                writer.add_scalar('R2/train', train_r2, epoch)
+                writer.add_scalar('R2/val', val_r2, epoch)
                 if val_y_loss > cur_loss:
                     num_incr_val_loss += 1
                     if num_incr_val_loss >= 10:
