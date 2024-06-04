@@ -58,6 +58,7 @@ def compute_r2_score(y_true, y_pred):
     y_pred_np = y_pred.detach().cpu().numpy()
     return r2_score(y_true_np, y_pred_np)
 
+
 def fit_epoch(model, train_batches, criterion, optimizer, mask, batch_size, device=default_device):
     model.train()
     y_losses = []

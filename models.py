@@ -21,7 +21,6 @@ num_heads = {4, 6, 8}
 num_layers = {6, 12}
 '''
 
-
 class MHAlayer_exp(nn.Module):
     def __init__(self, num_features=10, num_heads=2):
         super(MHAlayer_exp, self).__init__()
