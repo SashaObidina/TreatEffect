@@ -11,7 +11,39 @@ from sklearn.metrics import r2_score
 from models import *
 
 
-def eval_epoch(model, train_for_val, criterion, val_part, seq_len=256, num_clusters=8, device=default_device):
+CLIP_LIMIT = 1000
+
+
+def test_epoch(model, data, criterion, test_part, seq_len=256, device=default_device):
+    model.eval()
+    y_loss_batches = []
+    y_r2_batches = []
+    split_idx = int(seq_len * (1 - test_part))
+
+    # маска для правильного вычисления весов (чтобы последние test_part примеров не учитывались при вычислении весов)
+    predict_mask = torch.zeros((seq_len, seq_len), dtype=torch.bool)
+    for j in range(seq_len):
+        predict_mask[j, j] = True
+        predict_mask[j, split_idx:] = True
+
+    for i in range(len(data[0])):  # итерация по всем батчам данных из val_batches
+        X, y, t = data[0][i], data[1][i], data[2][i]
+        X = X.to(device)
+        y = y.to(device)
+        t = t.to(device)
+        with torch.enable_grad():
+            y_pred, yc_pred, cate_pred = model.forward(X, y, t, 1 - t, predict_mask.to(device))
+            y_loss = torch.mean(criterion(y_pred[:, split_idx:], y[split_idx:].unsqueeze(0)))  # средний лосс по батчу, unsqueeze(0) - чтобы совпадали размерности (1 * n)
+            y_r2 = compute_r2_score(y_pred[:, split_idx:].squeeze(0), y[split_idx:], y_loss.item())
+            y_loss_batches.append(y_loss.item())  # присоединяем среднее по батчу
+            y_r2_batches.append(y_r2)
+            print(
+                f"batch_number_test: {i + 1}, y_loss_test: {y_loss.item()}, y_r2_test: {y_r2}")
+
+    return np.mean(y_loss_batches), np.mean(y_r2_batches)
+
+
+def eval_epoch(model, train_for_val, criterion, val_part, seq_len=256, device=default_device):
     model.eval()
     y_loss_batches = []
     y_r2_batches = []
@@ -31,9 +63,11 @@ def eval_epoch(model, train_for_val, criterion, val_part, seq_len=256, num_clust
         with torch.enable_grad():
             y_pred, yc_pred, cate_pred = model.forward(X, y, t, 1 - t, predict_mask.to(device))
             y_loss = torch.mean(criterion(y_pred[:, split_idx:], y[split_idx:].unsqueeze(0)))  # средний лосс по батчу, unsqueeze(0) - чтобы совпадали размерности (1 * n)
-            y_r2 = compute_r2_score(y_pred[:, split_idx:].squeeze(0), y[split_idx:])
+            y_r2 = compute_r2_score(y_pred[:, split_idx:].squeeze(0), y[split_idx:], y_loss.item())
             y_loss_batches.append(y_loss.item())  # присоединяем среднее по батчу
             y_r2_batches.append(y_r2)
+            print(
+                f"batch_number_val: {i + 1}, y_loss_val: {y_loss.item()}, y_r2_val: {y_r2}")
 
     return np.mean(y_loss_batches), np.mean(y_r2_batches)
 
@@ -53,14 +87,22 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
-def compute_r2_score(y_true, y_pred):
+def compute_r2_score(y_true, y_pred, mse_model):
     y_true_np = y_true.detach().cpu().numpy()
     y_pred_np = y_pred.detach().cpu().numpy()
-    return r2_score(y_true_np, y_pred_np)
+    #return r2_score(y_true_np, y_pred_np)
+    #mse_model = np.mean((y_true_np - y_pred_np) ** 2)
+
+    y_mean = np.mean(y_true_np) # for baseline
+    mse_baseline = np.mean((y_true_np - y_mean) ** 2)
+    r2_score = 1 - (mse_model / mse_baseline)
+    return r2_score
 
 
-def fit_epoch(model, train_batches, criterion, optimizer, mask, batch_size, device=default_device):
+
+def fit_epoch(model, train_batches, criterion, optimizer, mask, batch_size, clip_grad_norm=None, device=default_device):
     model.train()
+    torch.autograd.set_detect_anomaly(True)
     y_losses = []
     y_r2_scores = []
 
@@ -89,18 +131,25 @@ def fit_epoch(model, train_batches, criterion, optimizer, mask, batch_size, devi
             return None, None
 
         y_loss = criterion(y_pred, y_train)  # unsqueeze(0) - чтобы совпадали размерности (1 * n)
-        y_r2 = compute_r2_score(y_pred, y_train)
-        y_losses.append(y_loss.item())  # присоединяем среднее по батчу
+        y_loss_clipped = torch.clamp(y_loss, max=CLIP_LIMIT)
+        y_loss_clipped_mean = torch.mean(y_loss_clipped)
+        #print('y_loss_clipped_mean', y_loss_clipped_mean)
+        y_r2 = compute_r2_score(y_pred, y_train, y_loss_clipped_mean.item())
+        y_losses.append(y_loss_clipped_mean.item())  # присоединяем среднее по батчу
         y_r2_scores.append(y_r2)
 
         #nan_mask_loss = torch.isnan(y_loss)
         #print("y_loss nans", torch.sum(nan_mask_loss).item())
 
-        torch.mean(y_loss).backward()  # шаг градиента по y_loss
+        #with torch.autograd.set_detect_anomaly(True):
+        y_loss_clipped_mean.backward()  # шаг градиента по y_loss
+
+        #if clip_grad_norm is not None:
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
 
         optimizer.step()
         print(
-            f"batch_number: {i + 1}, y_loss: {y_loss.item()}, y_r2: {y_r2}")
+            f"batch_number: {i + 1}, y_loss: {y_loss_clipped_mean.item()}, y_r2: {y_r2}")
 
     return np.mean(y_losses), np.mean(y_r2_scores)  # средние значения лосса по Y по эпохе
 
@@ -170,8 +219,9 @@ def train(writer, model, optimizer, scheduler=get_cosine_schedule_with_warmup, n
                                                             num_features=num_features, get_batch=get_batch_mlp,
                                                             differentiable_hyperparameters=diff_params,
                                                             hyperparameters=params, batch_size_per_gp_sample=1)
+            print("x shape, y shape", x.shape, y.shape)
             val_part = 0
-            train_size = batch_size
+            train_size = seq_len
             if epoch % valid_step == 0:
                 val_part = 0.3
                 train_size = int((1 - val_part) * train_size)
@@ -190,10 +240,11 @@ def train(writer, model, optimizer, scheduler=get_cosine_schedule_with_warmup, n
             for j in range(seq_len):
                 mask[j, j] = True
                 mask[j, train_size:] = True
-            train_y_loss, train_r2 = fit_epoch(model, train_batches, criterion, optimizer, mask, train_size)
+            train_y_loss, train_r2 = fit_epoch(model, train_batches, criterion, optimizer, mask, train_size,
+                                               clip_grad_norm=0.5)
             if train_y_loss is None and train_r2 is None:
                 print(f'Skip epoch {epoch} because of NaNs')
-                return
+                continue
 
             val_y_loss = float('inf')
             val_r2 = float('-inf')
@@ -240,4 +291,132 @@ def train(writer, model, optimizer, scheduler=get_cosine_schedule_with_warmup, n
         scheduler_state = scheduler.state_dict()
 
     # get_embeddings(model, all_train_dataset, file_path)
+    return (history, cur_loss, cur_r2, cur_model, optimizer_state, scheduler_state)
+
+
+def get_random_batch(data, batch_size, seq_len):
+    X, T, Y = data[0], data[1], data[2]
+    total_size = batch_size * seq_len
+    num_features = X.shape[1]
+
+    # Choose elements with replacement if needed
+    if total_size > X.shape[0]:
+        indices = np.random.choice(X.shape[0], total_size, replace=True) # with repeating
+    else:
+        indices = np.random.choice(X.shape[0], total_size, replace=False)
+
+    batch_X = X[indices].reshape(seq_len, batch_size, num_features)
+    batch_T = T[indices].reshape(seq_len, batch_size)
+    batch_Y = Y[indices].reshape(seq_len, batch_size)
+
+    return torch.tensor(batch_X, dtype=torch.float32), torch.tensor(batch_Y, dtype=torch.float32), torch.tensor(batch_T, dtype=torch.float32)
+
+
+def train_without_generation(writer, model, train_data, optimizer, scheduler=get_cosine_schedule_with_warmup, num_epochs=101, batch_size=512, valid_step=10,
+          seq_len=512, lr=0.01, warmup_epochs=10, weight_decay=0.0, mahalanobis=False):
+
+    train_dataset = (train_data[0][0], train_data[0][1], train_data[1][0])
+    print(train_dataset[0].shape)
+
+    model.train()
+    log_template = "\nEpoch {epoch:03d} train_y_loss: {train_y_loss:0.4f} train_r2: {train_r2:0.4f} val_y_loss: {val_y_loss:0.4f} val_r2: {val_r2:0.4f}"
+    history = []
+    cur_model = None
+    cur_loss = float('inf')
+    cur_r2 = float('-inf')
+    num_incr_val_loss = 0
+
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    criterion = nn.MSELoss()
+    scheduler = scheduler(optimizer, warmup_epochs,
+                          num_epochs if num_epochs is not None else 100) # when training for fixed time lr schedule takes 100 steps
+
+    with tqdm(desc="epoch", total=num_epochs) as pbar_outer:
+        for epoch in range(num_epochs):
+            train_y_loss_sum = 0.0
+            train_r2_sum = 0.0
+            model.train()
+
+            val_part = 0
+            train_size = batch_size
+            if epoch % valid_step == 0:
+                val_part = 0.3
+                train_size = int((1 - val_part) * train_size)
+
+            since = time.time()
+
+            x, y, t = get_random_batch(train_dataset, batch_size, seq_len)
+            #print(x.shape, y.shape, t.shape)
+
+            val_part = 0
+            train_size = seq_len
+            if epoch % valid_step == 0:
+                val_part = 0.3
+                train_size = int((1 - val_part) * train_size)
+            x_stand = normalize_data(x, train_size).permute(1, 0, 2)
+            y = y.permute(1, 0)
+            t = t.permute(1, 0)
+            x_stand[torch.isnan(x_stand)] = 0.0
+            y[torch.isnan(y)] = 0.0
+            t[torch.isnan(t)] = 0.0
+            since = time.time()
+            # print(x_stand.shape, y.shape, t.shape)
+            train_batches = (x_stand, y, t)
+
+            # mask = torch.eye(train_size, dtype=bool)  # True на диагонали
+            mask = torch.zeros((seq_len, seq_len), dtype=torch.bool)
+            for j in range(seq_len):
+                mask[j, j] = True
+                mask[j, train_size:] = True
+            train_y_loss, train_r2 = fit_epoch(model, train_batches, criterion, optimizer, mask, train_size,
+                                               clip_grad_norm=0.5)
+            if train_y_loss is None and train_r2 is None:
+                print(f'Skip epoch {epoch} because of NaNs')
+                continue
+
+            val_y_loss = float('inf')
+            val_r2 = float('-inf')
+            if epoch % valid_step == 0:
+                val_y_loss, val_r2 = eval_epoch(model, train_batches, criterion, val_part, seq_len)
+                writer.add_scalar('MSE/train', train_y_loss, epoch)
+                writer.add_scalar('MSE/val', val_y_loss, epoch)
+                writer.add_scalar('R2/train', train_r2, epoch)
+                writer.add_scalar('R2/val', val_r2, epoch)
+                if val_y_loss > cur_loss:
+                    num_incr_val_loss += 1
+                    if num_incr_val_loss >= 10:
+                        print(f"Validation loss increased for 10 epochs. Stopping training. Current epoch: {epoch}.")
+                        break
+                else:
+                    num_incr_val_loss = 0
+                    cur_model = model  # сохраняем модель только при уменьшающемся лоссе
+                cur_loss = val_y_loss
+                cur_r2 = val_r2
+
+                '''if val_y_loss < best_loss and val_r2 > best_r2: # количество эпох дб кратным 10, чтобы могла выбираться лучшая модель
+                    best_loss = val_y_loss
+                    best_r2 = val_r2
+                    best_model = model
+                '''
+
+            history.append((train_y_loss, train_r2, val_y_loss, val_r2))
+
+            scheduler.step()  # "затухание" lr оптимизатора
+
+            # отображение статуса обучения
+            pbar_outer.update(1)
+
+            log_template = "\nEpoch {ep}: Train Y MSE: {train_y_loss}, Train Y R2: {train_r2}, Val Y MSE: {val_y_loss}, Val Y R2: {val_r2}"
+            tqdm.write(
+                log_template.format(ep=epoch + 1, train_y_loss=train_y_loss, train_r2=train_r2, val_y_loss=val_y_loss,
+                                    val_r2=val_r2))
+
+            time_elapsed = time.time() - since
+            print('Training for one epoch complete in {:.0f}m {:.0f}s'.format(
+                time_elapsed // 60, time_elapsed % 60))
+
+        optimizer_state = optimizer.state_dict()
+        scheduler_state = scheduler.state_dict()
+
+        # get_embeddings(model, all_train_dataset, file_path)
     return (history, cur_loss, cur_r2, cur_model, optimizer_state, scheduler_state)

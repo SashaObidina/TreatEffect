@@ -6,6 +6,7 @@ from sklearn.model_selection import ParameterSampler
 from train_eval_funcs import *
 from generation import *
 from scipy.stats import uniform
+from datasets import *
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -18,9 +19,9 @@ from torch.utils.tensorboard import SummaryWriter
 def main(n_iter, num_epochs, batch_size, valid_step, max_num_features, seq_len, lr, warmup_epochs, weight_decay, mahalanobis):
     param_grid = {
         'p': uniform(0.1, 0.5),
-        'linear1_output': [128, 256, 512, 1024],
-        'linear2_output': [128, 256, 512, 1024],
-        'linear3_output': [16, 32, 64, 128, 256],
+        'linear1_output': [128, 256],
+        'linear2_output': [256, 512, 1024],
+        'linear3_output': [32, 64, 128, 256],
         'num_heads': [4, 8],
         'num_layers': [6, 12]
     }
@@ -37,22 +38,23 @@ def main(n_iter, num_epochs, batch_size, valid_step, max_num_features, seq_len, 
 
     for i, params in enumerate(param_sampler):
         print(f"Iteration {i + 1}/{n_iter}: Hyperparameters: {params}")
-        writer = SummaryWriter('logs_small')
-        model = ModelExp(input_dim=10, p=params['p'], linear1_output=params['linear1_output'],
+        writer = SummaryWriter('logs_test')
+        model = ModelExp_mahal(input_dim=10, p=params['p'], linear1_output=params['linear1_output'],
                              linear2_output=params['linear2_output'], linear3_output=params['linear3_output'],
                              num_heads=params['num_heads'], num_layers=params['num_layers']).to(default_device)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-        train_res = train(writer, model=model, optimizer=optimizer, scheduler=get_cosine_schedule_with_warmup,
+        ihdp = IHDP(replications=2)
+        train_data, test_data = ihdp.get_train_test()
+        train_res = train_without_generation(writer, model=model, train_data=train_data, optimizer=optimizer, scheduler=get_cosine_schedule_with_warmup,
                                       num_epochs=num_epochs, batch_size=batch_size, valid_step=valid_step,
-                                      max_num_features=max_num_features, seq_len=seq_len, lr=lr,
-                                      warmup_epochs=warmup_epochs, weight_decay=weight_decay)
+                                      seq_len=seq_len, lr=lr, warmup_epochs=warmup_epochs, weight_decay=weight_decay)
         if train_res:
             history, mse, r2, model, optimizer_state, scheduler_state = train_res
         else:
-            continue
+            return
 
-        filename = 'model_optimizer_scheduler_{}.pkl'.format(i)
+        filename = 'mahal_test_idhp_{}.pkl'.format(i)
         data_to_save = (model, optimizer_state, scheduler_state)
         with open(filename, 'wb') as f:
             pickle.dump(data_to_save, f)
@@ -90,7 +92,7 @@ def main(n_iter, num_epochs, batch_size, valid_step, max_num_features, seq_len, 
         plt.legend()
 
         plt.tight_layout()
-        plt.savefig(f'iteration_{i}_plot.png')
+        plt.savefig(f'iteration_{i}mahal_test_ihdp.png')
         plt.show()
 
         if mse < best_loss_mse:  # and r2 > best_r2:
